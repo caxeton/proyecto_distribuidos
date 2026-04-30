@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  sistema_cache:
+    image: redis:latest
+    container_name: cache
+    command: redis-server --maxmemory 50M --maxmemory-policy allkeys-lfu
+    ports:
+      - "6379:6379"
+
+  response_gen:
+    build: ./response_gen
+    container_name: generador_respuestas
+    ports:
+      - "5005:5000"
+    volumes:
+      - ./dataset:/app/data
+    depends_on:
+      - sistema_cache
+  
+  traffic_gen:
+    build: ./traffic_gen
+    container_name: generador_trafico
+    depends_on:
+      - response_gen
