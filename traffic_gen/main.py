@@ -17,21 +17,22 @@ ZONAS = [
 TIPOS_CONSULTAS = ["q1", "q2", "q3", "q4", "q5"]
 
 def obtener_evictions():
-    """Consulta al cerebro cuántas evicciones totales ha hecho Redis"""
     try:
-        r = requests.get(f"{URL_BASE}/stats", timeout=2.0)
-        return r.json().get("evictions", 0)
-    except:
+        r = requests.get(f"{URL_BASE}/stats", timeout=5.0)
+        evicciones = r.json().get("evictions", 0)
+        return evicciones
+    except Exception as e:
+        print(f"\n[ERROR CRÍTICO] No se pudo leer evictions del servidor: {e}\n", flush=True)
         return 0
 
 def ejecutar_experimento(tipo_distribucion="uniforme"):
     print(f"\n=======================================================", flush=True)
-    print(f"Comienzo {tipo_distribucion.upper()}", flush=True)
+    print(f"INICIANDO: {tipo_distribucion.upper()}", flush=True)
     print(f"=======================================================", flush=True)
     
     tiempos_totales = []
-    latencias_hit = []   # Para calcular t_cache
-    latencias_miss = []  # Para calcular t_db
+    latencias_hit = []   
+    latencias_miss = []  
     resultados = {"HIT": 0, "MISS": 0}
     
     if tipo_distribucion == "zipf":
@@ -39,7 +40,6 @@ def ejecutar_experimento(tipo_distribucion="uniforme"):
         probabilidades = [1.0 / (i**a) for i in range(1, len(ZONAS) + 1)]
         probabilidades /= np.sum(probabilidades)
     
-    # Anotamos las evicciones ANTES de empezar la prueba
     evictions_start = obtener_evictions()
     tiempo_inicio_total = time.time()
 
@@ -55,8 +55,7 @@ def ejecutar_experimento(tipo_distribucion="uniforme"):
         
         if tipo_q == "q4":
             zona_b = random.choice(ZONAS)
-            while zona_b["id"] == zona["id"]:
-                zona_b = random.choice(ZONAS)
+            while zona_b["id"] == zona["id"]: zona_b = random.choice(ZONAS)
             params.update({
                 "lat_min_a": zona["lat_min"], "lat_max_a": zona["lat_max"],
                 "lon_min_a": zona["lon_min"], "lon_max_a": zona["lon_max"],
@@ -74,12 +73,7 @@ def ejecutar_experimento(tipo_distribucion="uniforme"):
 
         inicio_req = time.time()
         try:
-            respuesta = requests.get(
-                url, 
-                params=params, 
-                timeout=5.0, 
-                headers={'Connection': 'close'}
-            )
+            respuesta = requests.get(url, params=params, timeout=5.0, headers={'Connection': 'close'})
             fin_req = time.time()
             
             latencia_ms = (fin_req - inicio_req) * 1000
@@ -89,21 +83,15 @@ def ejecutar_experimento(tipo_distribucion="uniforme"):
             status = datos.get("status", "MISS")
             resultados[status] += 1
             
-            # Separar latencias para la fórmula de eficiencia
-            if status == "HIT":
-                latencias_hit.append(latencia_ms)
-            else:
-                latencias_miss.append(latencia_ms)
+            if status == "HIT": latencias_hit.append(latencia_ms)
+            else: latencias_miss.append(latencia_ms)
             
-            print(f"[{i+1}/{TOTAL_CONSULTAS}] [{tipo_q.upper()}] {info_zona.ljust(12)} | {status.ljust(4)} | Latencia: {latencia_ms:.2f}ms", flush=True)
+            if i % 100 == 0:
+                print(f"[{i}/{TOTAL_CONSULTAS}] Procesando...", flush=True)
             
-        except requests.exceptions.Timeout:
-            print(f"[{i+1}/{TOTAL_CONSULTAS}]  Timeout.", flush=True)
         except Exception as e:
-            print(f"[{i+1}/{TOTAL_CONSULTAS}] Error de red ignorado.", flush=True)
-        
-        time.sleep(0.05) 
-
+            pass 
+            
     tiempo_fin_total = time.time()
     tiempo_total_segundos = tiempo_fin_total - tiempo_inicio_total
     minutos_transcurridos = tiempo_total_segundos / 60.0
@@ -113,21 +101,15 @@ def ejecutar_experimento(tipo_distribucion="uniforme"):
 
     if len(tiempos_totales) > 0:
         hit_rate = (resultados["HIT"] / len(tiempos_totales)) * 100
-        
         throughput = len(tiempos_totales) / tiempo_total_segundos
-        
         p50 = np.percentile(tiempos_totales, 50)
         p95 = np.percentile(tiempos_totales, 95)
-        
         eviction_rate = evictions_del_periodo / minutos_transcurridos if minutos_transcurridos > 0 else 0
         
-
         t_cache = np.mean(latencias_hit) if latencias_hit else 0
         t_db = np.mean(latencias_miss) if latencias_miss else 0
-        hits = resultados["HIT"]
-        misses = resultados["MISS"]
-        total = hits + misses
-        cache_efficiency = (hits * t_cache - misses * t_db) / total if total > 0 else 0
+        total = resultados["HIT"] + resultados["MISS"]
+        cache_efficiency = (resultados["HIT"] * t_cache - resultados["MISS"] * t_db) / total if total > 0 else 0
         
         tabla_resumen = (
             f"--- {tipo_distribucion.upper()} ---\n"
@@ -139,31 +121,27 @@ def ejecutar_experimento(tipo_distribucion="uniforme"):
             f"Cache efficiency:  {cache_efficiency:.2f}\n"
         )
         return tabla_resumen
-    else:
-        print("No se recopilaron datos.", flush=True)
-        return f"--- {tipo_distribucion.upper()} ---\nNo hubo datos.\n"
+    return "No hubo datos."
 
 if __name__ == "__main__":
-    print("Esperando 10 segundos a que el Cerebro cargue el CSV...", flush=True)
+    print("Esperando 10 segundos para iniciar", flush=True)
     time.sleep(10)
     
     resumen_uniforme = ejecutar_experimento("uniforme")
     
-    print("Pausa de 5 segundos para limpiar la red de Docker...", flush=True)
+    print("\n🧹 Eliminando caché para nueva tanda de consultas", flush=True)
+    try:
+        requests.get(f"{URL_BASE}/flush", timeout=5.0)
+    except:
+        print("Error elimnando caché.")
     time.sleep(5)
     
-    try:
-        requests.get(f"{URL_BASE}/flush", timeout=2.0)
-        print ("Cache eliminado para nuevos sistema", flush=True)
-    except:
-        print("No se pudo borrar el cache", flush=TRUE)
-
     resumen_zipf = ejecutar_experimento("zipf")
     
+    print("\n\n" + "*"*50, flush=True)
+    print(" Estaditicas", flush=True)
+    print("*"*50, flush=True)
     print(resumen_uniforme, flush=True)
     print("-" * 30, flush=True)
     print(resumen_zipf, flush=True)
-    print("*"*50, flush=True)
-    
-    while True:
-        time.sleep(100)
+    print("*"*50, flush=True)   

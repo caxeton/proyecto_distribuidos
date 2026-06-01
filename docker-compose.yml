@@ -1,25 +1,51 @@
 version: '3.8'
 
 services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - 22181:2181
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - 29092:29092
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
   sistema_cache:
     image: redis:latest
     container_name: cache
-    command: redis-server --maxmemory 50M --maxmemory-policy allkeys-lfu
+    command: redis-server --maxmemory 15M --maxmemory-policy allkeys-lru
     ports:
       - "6379:6379"
 
-  response_gen:
+  generador_respuestas:
     build: ./response_gen
-    container_name: generador_respuestas
+    container_name: cerebro_flask
+    depends_on:
+      - kafka
+      - sistema_cache
     ports:
       - "5005:5000"
     volumes:
-      - ./dataset:/app/data
-    depends_on:
-      - sistema_cache
-  
-  traffic_gen:
+      - ./data:/app/data
+
+  generador_trafico:
     build: ./traffic_gen
-    container_name: generador_trafico
+    container_name: atacante_trafico
     depends_on:
-      - response_gen
+      - kafka
+      - generador_respuestas
