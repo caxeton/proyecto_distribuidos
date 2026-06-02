@@ -4,7 +4,6 @@ import json
 import numpy as np
 from confluent_kafka import Producer
 
-# Configuración de Kafka
 KAFKA_BROKER = "kafka:9092"
 TOPIC_PRINCIPAL = "consultas_geo"
 TOTAL_CONSULTAS = 200  

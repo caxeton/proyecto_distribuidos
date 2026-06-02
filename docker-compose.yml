@@ -49,3 +49,10 @@ services:
     depends_on:
       - kafka
       - generador_respuestas
+
+  trabajador_1:
+    build: ./consumers
+    container_name: consumer_worker_1
+    depends_on:
+      - kafka
+      - generador_respuestas
