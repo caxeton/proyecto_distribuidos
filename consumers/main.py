@@ -64,23 +64,31 @@ while True:
     params = datos["params"]
     id_consulta = datos["id_consulta"]
     
+    inicio_procesamiento = time.time()
+    
+    tiempo_en_cola = (inicio_procesamiento - datos["timestamp_origen"]) * 1000
+    
     cache_key = generar_cache_key(tipo_q, params)
     if cache_key and cache.get(cache_key):
-        print(f"Respuesta encontrada en caché para {id_consulta}", flush=True)
+        fin_procesamiento = time.time()
+        latencia_ms = (fin_procesamiento - inicio_procesamiento) * 1000
+        print(f"⚡ [HIT] {id_consulta} | Latencia: {latencia_ms:.2f}ms | Espera en cola: {tiempo_en_cola:.2f}ms", flush=True)
         continue 
-
+        
     try:
         url = f"{URL_CEREBRO}/{tipo_q}"
         respuesta = requests.get(url, params=params, timeout=5.0)
+        fin_procesamiento = time.time()
+        latencia_ms = (fin_procesamiento - inicio_procesamiento) * 1000
         
         if respuesta.status_code == 200:
-            print(f"exito: {datos['id_consulta']} calculada.", flush=True)
+            print(f"[MISS - RESUELTO] {id_consulta} | Latencia HTTP: {latencia_ms:.2f}ms", flush=True)
         else:
-            print(f"fallo para {datos['id_consulta']}", flush=True)
+            print(f"rror HTTP {respuesta.status_code} en Cerebro.", flush=True)
             derivar_a_falla(datos)
             
     except requests.exceptions.RequestException:
-        print(f"Servidor caído. Perdimos: {datos['id_consulta']}", flush=True)
+        print(f"Falló {id_consulta}", flush=True)
         derivar_a_falla(datos)
-        time.sleep(1) 
+        time.sleep(1)
 

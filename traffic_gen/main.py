@@ -6,7 +6,7 @@ from confluent_kafka import Producer
 
 KAFKA_BROKER = "kafka:9092"
 TOPIC_PRINCIPAL = "consultas_geo"
-TOTAL_CONSULTAS = 200  
+TOTAL_CONSULTAS = 5000 
 
 ZONAS = [
     {"id": "Z1", "lat_min": -33.445, "lat_max": -33.420, "lon_min": -70.640, "lon_max": -70.600},
