@@ -1,22 +1,29 @@
-version: '3.8'
 
 services:
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
     container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - 22181:2181
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo ruok | nc -w 2 localhost 2181 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - sistema_net
 
   kafka:
     image: confluentinc/cp-kafka:7.4.0
     container_name: kafka
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
-      - 29092:29092
+      - "29092:29092"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -25,35 +32,162 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"      
+      KAFKA_LOG_RETENTION_HOURS: 2               
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 2>/dev/null || exit 1"]
+      interval: 15s
+      timeout: 15s
+      retries: 15
+      start_period: 60s
+    networks:
+      - sistema_net
 
   sistema_cache:
-    image: redis:latest
+    image: redis:7.2-alpine
     container_name: cache
-    command: redis-server --maxmemory 50M --maxmemory-policy allkeys-lru
+    command: redis-server --maxmemory 50mb --maxmemory-policy allkeys-lru --save ""
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sistema_net
 
   generador_respuestas:
     build: ./response_gen
     container_name: cerebro_flask
     depends_on:
-      - kafka
-      - sistema_cache
+      kafka:
+        condition: service_healthy
+      sistema_cache:
+        condition: service_healthy
     ports:
       - "5005:5000"
     volumes:
       - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 200s
+    networks:
+      - sistema_net
+
+  trabajador_1:
+    build: ./consumers
+    depends_on:
+      kafka:
+        condition: service_healthy
+      generador_respuestas:
+        condition: service_started
+      sistema_cache:
+        condition: service_healthy
+    networks:
+      - sistema_net
+    restart: on-failure
 
   generador_trafico:
     build: ./traffic_gen
     container_name: atacante_trafico
     depends_on:
-      - kafka
-      - generador_respuestas
+      kafka:
+        condition: service_healthy
+    environment:
+      TOTAL_CONSULTAS: "5000"
+      DISTRIBUCION: "uniforme"    
+      MODO: "normal"               
+      DELAY_MS: "0"
+    networks:
+      - sistema_net
 
-  trabajador_1:
-    build: ./consumers
-    # container_name: consumer_worker_1
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false       
+      - xpack.security.http.ssl.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - bootstrap.memory_lock=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    networks:
+      - sistema_net
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: kibana
     depends_on:
-      - kafka
-      - generador_respuestas
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - xpack.security.enabled=false
+    ports:
+      - "5601:5601"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:5601/api/status | grep -q 'available'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    networks:
+      - sistema_net
+
+  es_init:
+    image: python:3.11-slim
+    container_name: es_init
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    volumes:
+      - ./spark_streaming:/app
+    command: python /app/init_elasticsearch.py
+    networks:
+      - sistema_net
+    restart: "no"
+
+  spark_streaming:
+    build: ./spark_streaming
+    container_name: spark_streaming
+    depends_on:
+      kafka:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      es_init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BROKER:    "kafka:9092"
+      METRICS_TOPIC:   "metrics-topic"
+      ES_HOST:         "elasticsearch"
+      ES_PORT:         "9200"
+      ES_INDEX:        "metricas_sistema"
+      WINDOW_DURATION: "1 minute"
+      SLIDE_DURATION:  "30 seconds"
+    networks:
+      - sistema_net
+    restart: on-failure
+
+volumes:
+  es_data:
+    driver: local
+
+networks:
+  sistema_net:
+    driver: bridge
